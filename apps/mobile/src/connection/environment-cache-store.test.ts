@@ -80,6 +80,19 @@ describe("mobile SQLite environment cache store", () => {
     }),
   );
 
+  it.effect("removes one persisted VCS ref snapshot", () =>
+    Effect.gen(function* () {
+      const memory = makeDatabase();
+      const store = yield* make().pipe(Effect.provideService(MobileDatabase, memory.database));
+      yield* store.saveVcsRefs(ENVIRONMENT_ID, "/repo", REFS);
+
+      yield* store.removeVcsRefs(ENVIRONMENT_ID, "/repo");
+
+      expect(yield* store.loadVcsRefs(ENVIRONMENT_ID, "/repo")).toEqual(Option.none());
+      expect(memory.removed).toContain(cacheId(ENVIRONMENT_ID, "vcs-refs", "/repo"));
+    }),
+  );
+
   it.effect("clears one environment without touching another", () =>
     Effect.gen(function* () {
       const memory = makeDatabase();

@@ -251,6 +251,7 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     saveServerConfig: () => Effect.void,
     loadVcsRefs: () => Effect.succeed(Option.none()),
     saveVcsRefs: () => Effect.void,
+    removeVcsRefs: () => Effect.void,
     clear: (environmentId) =>
       Ref.update(shellCache, (current) => {
         const next = new Map(current);

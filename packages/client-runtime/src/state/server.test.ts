@@ -152,6 +152,7 @@ describe("server state projection", () => {
         saveServerConfig: (_environmentId, config) => Queue.offer(savedConfigs, config),
         loadVcsRefs: () => Effect.succeed(Option.none()),
         saveVcsRefs: () => Effect.void,
+        removeVcsRefs: () => Effect.void,
         clear: () => Effect.void,
       });
 
@@ -211,6 +212,7 @@ describe("server state projection", () => {
         saveServerConfig: (_environmentId, config) => Queue.offer(savedConfigs, config),
         loadVcsRefs: () => Effect.succeed(Option.none()),
         saveVcsRefs: () => Effect.void,
+        removeVcsRefs: () => Effect.void,
         clear: () => Effect.void,
       });
 

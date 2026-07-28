@@ -13,7 +13,7 @@ import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import { createEnvironmentRpcCommand, createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -23,6 +23,7 @@ import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { request, subscribe, type EnvironmentRpcInput } from "../rpc/client.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 import { vcsCommandConcurrency, vcsCommandScheduler } from "./vcsCommandScheduler.ts";
+import { invalidateCachedVcsRefs, vcsRefsRevisionAtom } from "./vcsRefInvalidation.ts";
 
 const OFFLINE_BRANCH_LIST_LIMIT = 100;
 const VCS_REFS_IDLE_TTL_MS = 30_000;
@@ -70,7 +71,7 @@ export const makeCachedVcsRefsChanges = Effect.fn("CachedVcsRefsState.makeChange
       )
     : Option.none<VcsListRefsResult>();
   const refresh = Effect.fn("CachedVcsRefsState.refresh")(function* () {
-    const refs = yield* request(WS_METHODS.vcsListRefs, input).pipe(
+    const refs = yield* request(WS_METHODS.vcsListRefs, { ...input, refresh: true }).pipe(
       Effect.provideService(EnvironmentSupervisor, supervisor),
     );
     if (useCache) {
@@ -136,7 +137,10 @@ export function createVcsEnvironmentAtoms<R, E>(
     Atom.family((inputKey: string) => {
       const input = JSON.parse(inputKey) as VcsListRefsInput;
       return runtime
-        .atom(cachedVcsRefsChanges(environmentId, input))
+        .atom((get) => {
+          get(vcsRefsRevisionAtom({ environmentId }));
+          return cachedVcsRefsChanges(environmentId, input);
+        })
         .pipe(
           Atom.setIdleTTL(VCS_REFS_IDLE_TTL_MS),
           Atom.withLabel(`environment-data:vcs:list-refs:${environmentId}:${inputKey}`),
@@ -147,6 +151,14 @@ export function createVcsEnvironmentAtoms<R, E>(
     readonly environmentId: EnvironmentId;
     readonly input: VcsListRefsInput;
   }) => listRefsByEnvironment(target.environmentId)(JSON.stringify(target.input));
+  const invalidateRefs = (
+    target: { readonly environmentId: EnvironmentId; readonly input: { readonly cwd: string } },
+    registry: AtomRegistry.AtomRegistry,
+  ) =>
+    invalidateCachedVcsRefs(registry, {
+      environmentId: target.environmentId,
+      cwd: target.input.cwd,
+    });
 
   return {
     listRefs,
@@ -168,6 +180,7 @@ export function createVcsEnvironmentAtoms<R, E>(
       tag: WS_METHODS.vcsPull,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
+      onSuccess: invalidateRefs,
     }),
     refreshStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:refresh-status",
@@ -180,30 +193,35 @@ export function createVcsEnvironmentAtoms<R, E>(
       tag: WS_METHODS.vcsCreateWorktree,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
+      onSuccess: invalidateRefs,
     }),
     removeWorktree: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:remove-worktree",
       tag: WS_METHODS.vcsRemoveWorktree,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
+      onSuccess: invalidateRefs,
     }),
     createRef: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:create-ref",
       tag: WS_METHODS.vcsCreateRef,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
+      onSuccess: invalidateRefs,
     }),
     switchRef: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:switch-ref",
       tag: WS_METHODS.vcsSwitchRef,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
+      onSuccess: invalidateRefs,
     }),
     init: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:init",
       tag: WS_METHODS.vcsInit,
       scheduler: vcsCommandScheduler,
       concurrency: vcsCommandConcurrency,
+      onSuccess: invalidateRefs,
     }),
   };
 }

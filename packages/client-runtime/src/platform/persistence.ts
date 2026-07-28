@@ -30,6 +30,7 @@ export class ConnectionPersistenceError extends Schema.TaggedErrorClass<Connecti
       "save-server-config",
       "load-vcs-refs",
       "save-vcs-refs",
+      "remove-vcs-refs",
       "clear-environment",
     ]),
     message: Schema.String,
@@ -101,6 +102,10 @@ export class EnvironmentCacheStore extends Context.Service<
       environmentId: EnvironmentId,
       cwd: string,
       refs: VcsListRefsResult,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    readonly removeVcsRefs: (
+      environmentId: EnvironmentId,
+      cwd: string,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
     readonly clear: (
       environmentId: EnvironmentId,

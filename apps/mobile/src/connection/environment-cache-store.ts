@@ -223,6 +223,11 @@ export const make = Effect.fn("MobileEnvironmentCacheStore.make")(function* () {
           .pipe(Effect.mapError(mapDatabaseError("save-vcs-refs")));
       },
     ),
+    removeVcsRefs: Effect.fn("MobileEnvironmentCache.removeVcsRefs")((environmentId, cwd) =>
+      database
+        .removeCache(environmentId, "vcs-refs", cwd)
+        .pipe(Effect.mapError(mapDatabaseError("remove-vcs-refs"))),
+    ),
     clear: Effect.fn("MobileEnvironmentCache.clear")((environmentId) =>
       database
         .clearEnvironmentCache(environmentId)

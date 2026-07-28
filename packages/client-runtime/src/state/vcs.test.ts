@@ -1,4 +1,9 @@
-import { EnvironmentId, WS_METHODS, type VcsListRefsResult } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  WS_METHODS,
+  type VcsListRefsInput,
+  type VcsListRefsResult,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -18,7 +23,10 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type { RpcSession } from "../rpc/session.ts";
+import { AtomRegistry } from "effect/unstable/reactivity";
+
 import { makeCachedVcsRefsChanges } from "./vcs.ts";
+import { invalidateVcsRefs, vcsRefsRevisionAtom } from "./vcsRefInvalidation.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -84,11 +92,74 @@ function cacheWithRefs(refs: Option.Option<VcsListRefsResult>) {
     saveServerConfig: () => Effect.void,
     loadVcsRefs: () => Effect.succeed(refs),
     saveVcsRefs: () => Effect.void,
+    removeVcsRefs: () => Effect.void,
     clear: () => Effect.void,
   });
 }
 
 describe("cached VCS refs", () => {
+  it("invalidates all ref streams in the mutated environment", () => {
+    const registry = AtomRegistry.make();
+    const environment = {
+      environmentId: TARGET.environmentId,
+    };
+    const otherEnvironment = {
+      environmentId: EnvironmentId.make("environment-2"),
+    };
+
+    expect(registry.get(vcsRefsRevisionAtom(environment))).toBe(0);
+    expect(registry.get(vcsRefsRevisionAtom(otherEnvironment))).toBe(0);
+
+    invalidateVcsRefs(registry, environment);
+
+    expect(registry.get(vcsRefsRevisionAtom(environment))).toBe(1);
+    expect(registry.get(vcsRefsRevisionAtom(otherEnvironment))).toBe(0);
+    registry.dispose();
+  });
+
+  it.effect("forces a repository snapshot refresh for filtered ref requests", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const requests = yield* Ref.make<ReadonlyArray<VcsListRefsInput>>([]);
+        const client = {
+          [WS_METHODS.vcsListRefs]: (input: VcsListRefsInput) =>
+            Ref.update(requests, (current) => [...current, input]).pipe(Effect.as(LIVE_REFS)),
+        } as unknown as WsRpcProtocolClient;
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(CONNECTED_CONNECTION_STATE),
+          session: yield* SubscriptionRef.make(Option.some(session(client))),
+          prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+
+        yield* Stream.unwrap(
+          makeCachedVcsRefsChanges({
+            cwd: "/repo",
+            limit: 20,
+            query: "release",
+            refKind: "remote",
+          }).pipe(
+            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+            Effect.provideService(Persistence.EnvironmentCacheStore, cacheWithRefs(Option.none())),
+          ),
+        ).pipe(Stream.runHead);
+
+        expect(yield* Ref.get(requests)).toEqual([
+          {
+            cwd: "/repo",
+            limit: 20,
+            query: "release",
+            refKind: "remote",
+            refresh: true,
+          },
+        ]);
+      }),
+    ),
+  );
+
   it.effect("loads an unfiltered branch list without a connection", () =>
     Effect.scoped(
       Effect.gen(function* () {
