@@ -194,7 +194,8 @@ export class CaptureShortcutConfig {
         }
       };
       await visit(root, 0);
-    } else if (request.operation === "install") {
+    } else if (request.operation === "install" && edit.after !== root.text) {
+      // Lua bindings appear as opaque callbacks, including our own unchanged shortcut.
       await this.checkHyprlandKeys(target.appId, edit.shortcut);
     }
     const preview = {
@@ -254,9 +255,9 @@ export class CaptureShortcutConfig {
         }
       };
       await unchanged();
+      if (preview.before === preview.after) return { backupPath: null, warning: null };
       if (desktop === "hyprland" && preview.operation === "install")
         await this.checkHyprlandKeys(pending.target.appId, preview.shortcut);
-      if (preview.before === preview.after) return { backupPath: null, warning: null };
       await NodeFSP.writeFile(temporary, preview.after, {
         flag: "wx",
         mode: root.stat.mode & 0o777,
