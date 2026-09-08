@@ -181,6 +181,43 @@ it("accepts an unchanged capture shortcut reported as a Lua callback", async () 
   await expect(setup.apply(unchanged.id, "hyprland")).rejects.toThrow("changed since");
   expect(await NodeFSP.readFile(hypr.path, "utf8")).toBe(before + "-- edited elsewhere\n");
 });
+it.each(["preview", "apply"] as const)(
+  "checks unchanged Hyprland .conf shortcuts for conflicts during %s",
+  async (stage) => {
+    const hypr = {
+      ...target(),
+      desktop: "hyprland" as const,
+      path: NodePath.join(directory, "hyprland.conf"),
+    };
+    const before = `${captureConfigBinding("hyprland", appId, "Ctrl+Shift+2")}\n`;
+    await NodeFSP.writeFile(hypr.path, before);
+    const ownBinding = {
+      modmask: 5,
+      key: "2",
+      dispatcher: "global",
+      arg: `${appId}:capture-window`,
+    };
+    tools.hyprlandBindings.mockResolvedValue([ownBinding]);
+    const unchanged = await setup.preview(hypr, install);
+    expect(unchanged.after).toBe(before);
+    expect(await setup.apply(unchanged.id, "hyprland")).toEqual({
+      backupPath: null,
+      warning: null,
+    });
+
+    const preview = stage === "apply" ? await setup.preview(hypr, install) : undefined;
+    tools.hyprlandBindings.mockResolvedValue([
+      ownBinding,
+      { modmask: 5, key: "2", dispatcher: "exec", arg: "kitty" },
+    ]);
+    await expect(
+      preview ? setup.apply(preview.id, "hyprland") : setup.preview(hypr, install),
+    ).rejects.toThrow("already used");
+    expect(await NodeFSP.readFile(hypr.path, "utf8")).toBe(before);
+    expect((await NodeFSP.readdir(directory)).sort()).toEqual(["config.kdl", "hyprland.conf"]);
+    expect(tools.reloadHyprland).not.toHaveBeenCalled();
+  },
+);
 it("rejects changing an existing capture shortcut to keys used by another Lua callback", async () => {
   const hypr = {
     ...target(),
