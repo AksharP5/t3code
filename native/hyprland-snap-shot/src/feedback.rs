@@ -428,6 +428,8 @@ pub fn run(directory: &Path, mut options: Options) -> Result<()> {
 }
 
 impl Feedback {
+    /// Draws the current flash or flight frame across configured output overlays and
+    /// requests frame callbacks and presentation feedback as needed.
     fn draw(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
         let progress = self
             .flight
