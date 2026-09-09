@@ -169,6 +169,8 @@ fn target(bounds: Rect, frame: Rect) -> Result<Rect> {
     })
 }
 
+/// Displays `directory/capture.png` in Hyprland feedback overlays, handling JSON
+/// commands from stdin and emitting presentation events to stdout until closed.
 pub fn run(directory: &Path, mut options: Options) -> Result<()> {
     if !options.bounds.valid() {
         return Err("Invalid capture bounds.".into());
