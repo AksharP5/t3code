@@ -142,6 +142,7 @@ fn clip(rect: Rect, output: Rect, image: (u32, u32)) -> Option<(Rect, Rect)> {
         },
     ))
 }
+/// Interpolates the flight rectangle with cubic ease-out, clamping progress to [0, 1].
 fn interpolate(from: Rect, to: Rect, progress: f64) -> Rect {
     let t = 1.0 - (1.0 - progress.clamp(0., 1.)).powi(3);
     Rect {
@@ -151,6 +152,7 @@ fn interpolate(from: Rect, to: Rect, progress: f64) -> Rect {
         height: from.height + (to.height - from.height) * t,
     }
 }
+/// Validates a normalized destination frame and maps it into logical window bounds.
 fn target(bounds: Rect, frame: Rect) -> Result<Rect> {
     if !bounds.valid()
         || !frame.valid()
