@@ -699,7 +699,7 @@ const tryRevealLinuxFile = Effect.fn("externalLauncher.tryRevealLinuxFile")(
           `["${uri.href}"]`,
           "",
         ],
-        { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+        { stdin: "ignore", stdout: "ignore", stderr: "ignore", forceKillAfter: "1 second" },
       ),
     );
     return exitCode === 0;
