@@ -25,6 +25,7 @@ import * as Option from "effect/Option";
 
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as PullRequestWatchReactor from "../../../orchestration-v2/PullRequestWatchReactor.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   type ListThreadPullRequestsResult,
@@ -34,7 +35,6 @@ import {
   PullRequestHostRequiredError,
   PullRequestUnlinkFailedError,
   PullRequestListFailedError,
-  PullRequestNotOpenError,
   type PullRequestTargetInput,
   PullRequestWatchFailedError,
   PullRequestThreadNotFoundError,
@@ -152,6 +152,7 @@ export function listThreadPullRequests(
 
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
+  const watches = yield* PullRequestWatchReactor.PullRequestWatchReactor;
 
   const projects = yield* ProjectService.ProjectService;
   const crypto = yield* Crypto.Crypto;
@@ -220,17 +221,8 @@ const make = Effect.gen(function* () {
     const thread = yield* requireThread(PullRequestWatchFailedError);
     const project = yield* projectOf(thread, PullRequestWatchFailedError);
     const target = yield* resolveTarget(input, project);
-    const watchedLink = (shell: OrchestrationV2ThreadShell) =>
-      threadPullRequestsOf(shell).find(
-        (link) => link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, target),
-      );
-    const before = watchedLink(thread);
-    const state = before?.snapshot?.state;
-    if (watching && state !== undefined && state !== "open") {
-      return yield* new PullRequestNotOpenError({ state });
-    }
-    yield* engine
-      .dispatch({
+    const result = yield* watches
+      .setWatching({
         type: "thread.pull-request.watch",
         commandId: yield* commandId("mcp-pr-watch", thread.id),
         threadId: thread.id,
@@ -240,15 +232,19 @@ const make = Effect.gen(function* () {
         watching,
         ...(watching ? { link: { url: target.url, source: "agent" as const } } : {}),
       })
-      .pipe(Effect.catchCause(dispatchFailure(PullRequestWatchFailedError)));
-    const after = yield* requireThread(PullRequestWatchFailedError);
+      .pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "PullRequestNotOpenError"
+            ? cause
+            : new PullRequestWatchFailedError({ cause }),
+        ),
+      );
     return {
       host: target.host,
       repository: target.repository,
       number: target.number,
       url: target.url,
-      watching: watchedLink(after)?.watch !== undefined,
-      wasWatching: before?.watch !== undefined,
+      ...result,
     };
   });
 

@@ -12,11 +12,13 @@ import * as Toolkit from "effect/unstable/ai/Toolkit";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as PullRequestWatchReactor from "../../../orchestration-v2/PullRequestWatchReactor.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   Orchestrator.OrchestratorV2,
   ProjectService.ProjectService,
+  PullRequestWatchReactor.PullRequestWatchReactor,
 ];
 
 const REGISTER_EVERY_PR =
@@ -117,15 +119,6 @@ export class PullRequestWatchFailedError extends Schema.TaggedError<PullRequestW
   }
 }
 
-export class PullRequestNotOpenError extends Schema.TaggedError<PullRequestNotOpenError>()(
-  "PullRequestNotOpenError",
-  { state: Schema.String },
-) {
-  override get message(): string {
-    return `The pull request is ${this.state}, so there is nothing to watch.`;
-  }
-}
-
 export class PullRequestListFailedError extends Schema.TaggedError<PullRequestListFailedError>()(
   "PullRequestListFailedError",
   { cause: Schema.Defect() },
@@ -145,7 +138,7 @@ export const PullRequestToolError = Schema.Union([
   PullRequestUnlinkFailedError,
   PullRequestListFailedError,
   PullRequestWatchFailedError,
-  PullRequestNotOpenError,
+  PullRequestWatchReactor.PullRequestNotOpenError,
 ]);
 export type PullRequestToolError = typeof PullRequestToolError.Type;
 

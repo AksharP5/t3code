@@ -43,7 +43,7 @@ interface LinkEntry {
   readonly link: ThreadPullRequestLink;
 }
 
-function snapshotFieldsOf(summary: PullRequestSummary): SnapshotFields {
+export function snapshotFieldsOf(summary: PullRequestSummary): SnapshotFields {
   return {
     state: summary.state,
     title: summary.title,

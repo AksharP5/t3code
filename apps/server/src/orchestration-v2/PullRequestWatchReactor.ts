@@ -1,6 +1,9 @@
 import {
   CommandId,
   MessageId,
+  PullRequestState,
+  type OrchestrationV2ServerCommand,
+  type OrchestrationV2ThreadShell,
   type OrchestrationV2Notification,
   type PullRequestActivity,
   type PullRequestComment,
@@ -11,26 +14,45 @@ import {
 } from "@t3tools/contracts";
 import {
   normalizeThreadPullRequestKey,
+  threadPullRequestsOf,
+  threadPullRequestKeysEqual,
   threadPullRequestKeyOf,
   visibleThreadPullRequests,
 } from "@t3tools/shared/threadPullRequests";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { snapshotFieldsOf } from "./PullRequestSyncReactor.ts";
 import { evaluatePullRequestWatch, pullRequestWatchMessage } from "./pullRequestWatch.ts";
 
 /** Passes in a row that could not read a pull request before its watch ends (one a minute). */
 const READ_FAILURE_LIMIT = 15;
+
+export class PullRequestNotOpenError extends Schema.TaggedError<PullRequestNotOpenError>()(
+  "PullRequestNotOpenError",
+  { state: PullRequestState },
+) {
+  override get message(): string {
+    return `The pull request is ${this.state}, so there is nothing to watch.`;
+  }
+}
+
+type WatchCommand = Extract<
+  OrchestrationV2ServerCommand,
+  { readonly type: "thread.pull-request.watch" }
+>;
 
 const logFailure =
   (message: string, fields: Record<string, unknown>) =>
@@ -73,6 +95,14 @@ export class PullRequestWatchReactor extends Context.Service<
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
     /** One pass over every watched pull request. */
     readonly sweep: Effect.Effect<void>;
+    readonly setWatching: (
+      command: WatchCommand,
+    ) => Effect.Effect<
+      { readonly watching: boolean; readonly wasWatching: boolean },
+      | PullRequestNotOpenError
+      | PullRequestService.PullRequestError
+      | Orchestrator.OrchestratorV2Error
+    >;
   }
 >()("t3/orchestration-v2/PullRequestWatchReactor") {}
 
@@ -97,6 +127,59 @@ export const make = Effect.gen(function* () {
     host: normalizeThreadPullRequestKey(link).host,
     repository: link.repository,
     number: link.number,
+  });
+
+  const setWatching = Effect.fn("PullRequestWatchReactor.setWatching")(function* (
+    command: WatchCommand,
+  ) {
+    const thread = yield* engine.getThreadShell(command.threadId);
+    if (thread === null) {
+      return yield* new Orchestrator.OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} was not found.`,
+      });
+    }
+    const watchedLink = (shell: OrchestrationV2ThreadShell | null) =>
+      shell === null
+        ? undefined
+        : threadPullRequestsOf(shell).find(
+            (link) =>
+              link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, command),
+          );
+    const before = watchedLink(thread);
+    if (command.watching && before?.snapshot?.state === "merged") {
+      return yield* new PullRequestNotOpenError({ state: "merged" });
+    }
+    if (command.watching && before?.snapshot?.state === "closed") {
+      const reference = { projectId: thread.projectId, ...identityOf(before) };
+      yield* pullRequests.invalidate({ reference });
+      const summary = yield* pullRequests.summary(
+        { ...reference, allowStale: false },
+        { recoverTransientFailure: false },
+      );
+      const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      yield* engine.dispatch({
+        type: "thread.pull-request-link.sync",
+        commandId: CommandId.make(`server:pr-watch-refresh:${thread.id}:${uuid}`),
+        threadId: thread.id,
+        ...identityOf(before),
+        snapshot: {
+          ...snapshotFieldsOf(summary),
+          syncedAt: DateTime.formatIso(yield* DateTime.now),
+        },
+        stack: before.stack,
+      });
+      if (summary.state !== "open") {
+        return yield* new PullRequestNotOpenError({ state: summary.state });
+      }
+    }
+    yield* engine.dispatch(command);
+    const after = yield* engine.getThreadShell(thread.id);
+    return {
+      watching: watchedLink(after)?.watch !== undefined,
+      wasWatching: before?.watch !== undefined,
+    };
   });
 
   /**
@@ -274,7 +357,7 @@ export const make = Effect.gen(function* () {
   const start: PullRequestWatchReactor["Service"]["start"] = () =>
     forkParked(sweep.pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.asVoid));
 
-  return { start, sweep } satisfies PullRequestWatchReactor["Service"];
+  return { start, sweep, setWatching } satisfies PullRequestWatchReactor["Service"];
 });
 
 export const layer = Layer.effect(PullRequestWatchReactor, make);

@@ -1,5 +1,6 @@
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
+import * as PullRequestWatchReactor from "../../../orchestration-v2/PullRequestWatchReactor.ts";
 import * as DeviceService from "../../../device/DeviceService.ts";
 import * as ServerConfig from "../../../config.ts";
 import { expect, it } from "@effect/vitest";
@@ -28,6 +29,7 @@ import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 const StubServicesLive = Layer.mergeAll(
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+  Layer.mock(PullRequestWatchReactor.PullRequestWatchReactor)({}),
   Layer.mock(DeviceService.DeviceService)({}),
   Layer.mock(ThreadManagementService.ThreadManagementService)({}),
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),

@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
+  PullRequestOperationError,
   ThreadId,
   type OrchestrationV2ServerCommand as OrchestrationCommand,
   type OrchestrationProjectShell,
@@ -22,6 +23,9 @@ import {
   v2PullRequestThread,
 } from "../../../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as PullRequestService from "../../../pullRequest/PullRequestService.ts";
+import * as PullRequestWatchReactor from "../../../orchestration-v2/PullRequestWatchReactor.ts";
+import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { listThreadPullRequests, PullRequestsToolkitHandlersLive } from "./handlers.ts";
 import { PullRequestLinkFailedError, PullRequestsToolkit } from "./tools.ts";
@@ -126,6 +130,7 @@ function makeLink(
 interface HarnessOptions {
   readonly thread?: PullRequestTestThread | null;
   readonly project?: OrchestrationProjectShell | null;
+  readonly summary?: PullRequestService.PullRequestService["Service"]["summary"];
   /** A rejection the orchestrator reports as the dispatch error's cause. */
   readonly reject?: (command: OrchestrationCommand) => string | null;
 }
@@ -134,8 +139,24 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
   options: HarnessOptions = {},
 ) {
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
+  const reads = yield* Ref.make<ReadonlyArray<string>>([]);
   const thread = options.thread === undefined ? makeThread([]) : options.thread;
   const project = options.project === undefined ? makeProject() : options.project;
+  const summary: PullRequestService.PullRequestService["Service"]["summary"] =
+    options.summary ??
+    ((input) =>
+      Effect.succeed({
+        provider: "github",
+        projectId: input.projectId,
+        repository: input.repository,
+        number: input.number,
+        title: "Reopened PR",
+        url: `https://github.com/${input.repository}/pull/${input.number}`,
+        state: "open",
+        headBranch: "feature",
+        baseBranch: "main",
+        updatedAt: "2026-08-28T00:00:00.000Z",
+      }));
   const dispatch: Orchestrator.OrchestratorV2Shape["dispatch"] = (command) =>
     Effect.gen(function* () {
       const rejection = options.reject?.(command) ?? null;
@@ -148,7 +169,8 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       yield* Ref.update(commands, (recorded) => [...recorded, command]);
       return { sequence: 1, storedEvents: [] };
     });
-  const dependencies = Layer.mergeAll(
+  const baseDependencies = Layer.mergeAll(
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
     Layer.mock(ProjectService.ProjectService)({
       getShell: () => Effect.succeed(Option.fromNullishOr(project)),
     }),
@@ -157,8 +179,20 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
         Effect.succeed(id === THREAD_ID && thread ? v2PullRequestThread(thread) : null),
       dispatch,
     }),
+    Layer.mock(PullRequestService.PullRequestService)({
+      invalidate: () => Ref.update(reads, (calls) => [...calls, "invalidate"]),
+      summary: (input, options) =>
+        Ref.update(reads, (calls) => [...calls, "summary"]).pipe(
+          Effect.andThen(
+            options?.recoverTransientFailure === false && input.allowStale === false
+              ? summary(input, options)
+              : Effect.die("Watch refresh must not return stale PR state"),
+          ),
+        ),
+    }),
     Layer.succeed(Crypto.Crypto, testCrypto),
   );
+  const dependencies = PullRequestWatchReactor.layer.pipe(Layer.provideMerge(baseDependencies));
   const toolkit = yield* PullRequestsToolkit.pipe(
     Effect.provide(PullRequestsToolkitHandlersLive.pipe(Layer.provide(dependencies))),
   );
@@ -177,7 +211,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities)),
       Effect.provide(dependencies),
     );
-  return { commands, call };
+  return { commands, reads, call };
 });
 
 describe("pull request toolkit handlers", () => {
@@ -271,6 +305,76 @@ describe("pull request toolkit handlers", () => {
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.watch", number: 3, watching: false },
       ]);
+      expect(yield* Ref.get(harness.reads)).toEqual([]);
+    }),
+  );
+
+  it.effect("starts watching a reopened PR after refreshing its closed snapshot", () =>
+    Effect.gen(function* () {
+      const link = makeLink(7, { headBranch: "feature" });
+      const harness = yield* makeHarness({
+        thread: makeThread([
+          { ...link, snapshot: link.snapshot && { ...link.snapshot, state: "closed" } },
+        ]),
+      });
+      yield* harness.call("watch_pull_request", { repository: "t3tools/t3code", number: 7 });
+      expect(yield* Ref.get(harness.reads)).toEqual(["invalidate", "summary"]);
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request-link.sync", number: 7, snapshot: { state: "open" } },
+        { type: "thread.pull-request.watch", number: 7, watching: true },
+      ]);
+    }),
+  );
+
+  it.effect("refuses a PR that remains closed on the host", () =>
+    Effect.gen(function* () {
+      const link = makeLink(7, { headBranch: "feature" });
+      const harness = yield* makeHarness({
+        thread: makeThread([
+          { ...link, snapshot: link.snapshot && { ...link.snapshot, state: "closed" } },
+        ]),
+        summary: (input) =>
+          Effect.succeed({
+            provider: "github",
+            projectId: input.projectId,
+            repository: input.repository,
+            number: input.number,
+            title: "Closed PR",
+            url: link.url,
+            state: "closed",
+            headBranch: "feature",
+            baseBranch: "main",
+            updatedAt: "2026-08-28T00:00:00.000Z",
+          }),
+      });
+      const error = yield* harness
+        .call("watch_pull_request", { repository: "t3tools/t3code", number: 7 })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "PullRequestNotOpenError", state: "closed" });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request-link.sync", number: 7, snapshot: { state: "closed" } },
+      ]);
+    }),
+  );
+
+  it.effect("reports a failed host refresh without starting a watch", () =>
+    Effect.gen(function* () {
+      const link = makeLink(7, { headBranch: "feature" });
+      const failure = new PullRequestOperationError({
+        operation: "summary",
+        detail: "Host offline",
+      });
+      const harness = yield* makeHarness({
+        thread: makeThread([
+          { ...link, snapshot: link.snapshot && { ...link.snapshot, state: "closed" } },
+        ]),
+        summary: () => Effect.fail(failure),
+      });
+      const error = yield* harness
+        .call("watch_pull_request", { repository: "t3tools/t3code", number: 7 })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "PullRequestWatchFailedError", cause: failure });
+      expect(yield* Ref.get(harness.commands)).toEqual([]);
     }),
   );
 
