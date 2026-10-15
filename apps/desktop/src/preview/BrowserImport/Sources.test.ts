@@ -122,6 +122,115 @@ const writeFirefoxCookieDatabase = (
     database.close();
   });
 
+describe("Linux browser configuration directory", () => {
+  it.effect.each([
+    { sourceId: "chrome", directory: "google-chrome" },
+    { sourceId: "brave", directory: "BraveSoftware/Brave-Browser" },
+    { sourceId: "helium", directory: "net.imput.helium" },
+  ] as const)(
+    "discovers $sourceId profiles and cookies under XDG_CONFIG_HOME",
+    ({ sourceId, directory }) =>
+      run(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-browser-xdg-" });
+          const configHome = path.join(home, "browser config");
+          const context = yield* sourcePathContext.pipe(
+            Effect.provideService(HostProcess.Environment, {
+              HOME: home,
+              XDG_CONFIG_HOME: configHome,
+            }),
+            Effect.provideService(HostProcess.Platform, "linux"),
+          );
+          const source = BROWSER_IMPORT_SOURCES.find((candidate) => candidate.id === sourceId)!;
+          const root = path.join(configHome, directory);
+          const database = path.join(root, "Default", "Network", "Cookies");
+          yield* fileSystem.makeDirectory(path.dirname(database), { recursive: true });
+          yield* writeCookieDatabase(database, 1);
+          yield* fileSystem.writeFileString(
+            path.join(root, "Local State"),
+            '{"profile":{"info_cache":{"Default":{"name":"Personal"}}}}',
+          );
+
+          assert.isTrue(yield* isSourceInstalled(source, context));
+          assert.deepEqual(yield* listSourceProfiles(source, context), [
+            { directory: "Default", name: "Personal", cookieCount: 1 },
+          ]);
+          assert.equal(yield* resolveCookieDatabase(source, context, "Default"), database);
+        }),
+      ),
+  );
+
+  it.effect.each([
+    { sourceId: "chrome", directory: "google-chrome", configHome: "CHROME_CONFIG_HOME" },
+    { sourceId: "helium", directory: "net.imput.helium", configHome: "HELIUM_CONFIG_HOME" },
+    { sourceId: "brave", directory: "BraveSoftware/Brave-Browser", configHome: "XDG_CONFIG_HOME" },
+  ] as const)("uses $configHome for $sourceId when browser overrides are set", (testCase) =>
+    run(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-browser-xdg-" });
+        const environment = {
+          HOME: home,
+          XDG_CONFIG_HOME: path.join(home, "xdg config"),
+          CHROME_CONFIG_HOME: path.join(home, ".config"),
+          HELIUM_CONFIG_HOME: path.join(home, "helium config"),
+        };
+        const context = yield* sourcePathContext.pipe(
+          Effect.provideService(HostProcess.Environment, environment),
+          Effect.provideService(HostProcess.Platform, "linux"),
+        );
+        const source = BROWSER_IMPORT_SOURCES.find(
+          (candidate) => candidate.id === testCase.sourceId,
+        )!;
+        const configHome = environment[testCase.configHome];
+        const otherConfigHome =
+          testCase.configHome === "XDG_CONFIG_HOME"
+            ? environment.CHROME_CONFIG_HOME
+            : environment.XDG_CONFIG_HOME;
+        const database = path.join(configHome, testCase.directory, "Default", "Cookies");
+        const staleDatabase = path.join(otherConfigHome, testCase.directory, "Default", "Cookies");
+        yield* fileSystem.makeDirectory(path.dirname(database), { recursive: true });
+        yield* fileSystem.makeDirectory(path.dirname(staleDatabase), { recursive: true });
+        yield* writeCookieDatabase(database, 1);
+        yield* writeCookieDatabase(staleDatabase, 2);
+
+        assert.equal(yield* resolveCookieDatabase(source, context, "Default"), database);
+        assert.deepEqual(yield* listSourceProfiles(source, context), [
+          { directory: "Default", name: "Default", cookieCount: 1 },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect.each([undefined, "", "relative/config"])(
+    "keeps the default profile location for invalid or unset XDG_CONFIG_HOME: %s",
+    (configHome) =>
+      run(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-browser-xdg-" });
+          const context = yield* sourcePathContext.pipe(
+            Effect.provideService(HostProcess.Environment, {
+              HOME: home,
+              XDG_CONFIG_HOME: configHome,
+            }),
+            Effect.provideService(HostProcess.Platform, "linux"),
+          );
+          const database = path.join(home, ".config", "net.imput.helium", "Default", "Cookies");
+          yield* fileSystem.makeDirectory(path.dirname(database), { recursive: true });
+          yield* writeCookieDatabase(database, 1);
+
+          assert.isTrue(yield* isSourceInstalled(helium, context));
+          assert.equal(yield* resolveCookieDatabase(helium, context, "Default"), database);
+        }),
+      ),
+  );
+});
+
 describe("Helium on Linux", () => {
   it.effect.skipIf(!symlinksSupported)("discovers its profiles and checks the user-data lock", () =>
     run(

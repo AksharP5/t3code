@@ -38,6 +38,11 @@ export interface BrowserImportPathContext {
   readonly path: Path.Path;
   readonly platform: NodeJS.Platform;
   readonly home: string;
+  /** Absolute Linux config root, falling back to `$HOME/.config`. */
+  readonly configHome: string;
+  /** Browser-specific roots take precedence over the shared Linux root. */
+  readonly chromeConfigHome: string | undefined;
+  readonly heliumConfigHome: string | undefined;
   /** `%APPDATA%` on Windows; unused elsewhere. */
   readonly appData: string | undefined;
   /** `%LOCALAPPDATA%` on Windows; unused elsewhere. */
@@ -75,6 +80,7 @@ const chromiumSource = (input: {
   readonly keychainAccount: string;
   readonly macSegments: ReadonlyArray<string>;
   readonly linuxSegments?: ReadonlyArray<string>;
+  readonly linuxConfigHome?: "chromeConfigHome" | "heliumConfigHome";
   readonly linuxSecretApplication?: string;
   readonly windowsSegments?: ReadonlyArray<string>;
 }): BrowserImportSourceDefinition => ({
@@ -98,9 +104,8 @@ const chromiumSource = (input: {
         ? context.path.join(context.localAppData, ...input.windowsSegments)
         : undefined;
     }
-    return input.linuxSegments
-      ? context.path.join(context.home, ".config", ...input.linuxSegments)
-      : undefined;
+    const configHome = context[input.linuxConfigHome ?? "configHome"] ?? context.configHome;
+    return input.linuxSegments ? context.path.join(configHome, ...input.linuxSegments) : undefined;
   },
 });
 
@@ -116,6 +121,7 @@ export const BROWSER_IMPORT_SOURCES: ReadonlyArray<BrowserImportSourceDefinition
     keychainAccount: "Chrome",
     macSegments: ["Google", "Chrome"],
     linuxSegments: ["google-chrome"],
+    linuxConfigHome: "chromeConfigHome",
     linuxSecretApplication: "chrome",
   }),
   chromiumSource({
@@ -169,6 +175,7 @@ export const BROWSER_IMPORT_SOURCES: ReadonlyArray<BrowserImportSourceDefinition
     keychainAccount: "Helium",
     macSegments: ["net.imput.helium"],
     linuxSegments: ["net.imput.helium"],
+    linuxConfigHome: "heliumConfigHome",
     windowsSegments: ["imput", "Helium", "User Data"],
     // Helium retains Chromium's libsecret application name on Linux.
     linuxSecretApplication: "chromium",
@@ -332,10 +339,15 @@ export const sourcePathContext = Effect.gen(function* () {
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   const environment = yield* HostProcess.Environment;
+  const home = environment.HOME ?? environment.USERPROFILE ?? "";
+  const configHome = environment.XDG_CONFIG_HOME;
   return {
     path,
     platform,
-    home: environment.HOME ?? environment.USERPROFILE ?? "",
+    home,
+    configHome: configHome && path.isAbsolute(configHome) ? configHome : path.join(home, ".config"),
+    chromeConfigHome: environment.CHROME_CONFIG_HOME,
+    heliumConfigHome: environment.HELIUM_CONFIG_HOME,
     appData: environment.APPDATA,
     localAppData: environment.LOCALAPPDATA,
   } satisfies BrowserImportPathContext;
