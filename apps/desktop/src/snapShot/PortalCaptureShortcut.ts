@@ -289,7 +289,7 @@ export class PortalCaptureShortcut {
         shortcutCanRetry: false,
         shortcutMessage: "Reconnecting to the desktop shortcut service…",
       });
-      if (this.owner) this.register();
+      this.register();
       return;
     }
     if (!this.owner || message.sender !== this.owner) return;

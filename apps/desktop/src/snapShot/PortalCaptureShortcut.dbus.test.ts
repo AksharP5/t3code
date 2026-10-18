@@ -197,12 +197,6 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
           closeWaiters.set(previousSession, resolve),
         );
         const pending = NodeEvents.EventEmitter.once(next.events, "changed");
-        if (!directReplacement) {
-          await previousServer.releaseName("org.freedesktop.portal.Desktop");
-          await pending;
-          expect(next.client.state.shortcutPending).toBe(true);
-          expect(next.client.hasSession).toBe(false);
-        }
         server = connect();
         servers.push(server);
         server.on("error", () => undefined);
@@ -210,8 +204,9 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
         const settled = NodeEvents.EventEmitter.once(next.events, "settled");
         await server.requestName(
           "org.freedesktop.portal.Desktop",
-          NameFlag.ALLOW_REPLACEMENT | NameFlag.REPLACE_EXISTING,
+          NameFlag.ALLOW_REPLACEMENT | (directReplacement ? NameFlag.REPLACE_EXISTING : 0),
         );
+        if (!directReplacement) await previousServer.releaseName("org.freedesktop.portal.Desktop");
         await pending;
         await settled;
         await sessionReleased;

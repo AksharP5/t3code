@@ -24,6 +24,7 @@ class FakeBus extends NodeEvents.EventEmitter {
   registryError: Error | undefined;
   registeredOwners = new Set<string>();
   registryResponse: Promise<void> | undefined;
+  activationError: Error | undefined;
   version = 2;
   autoBind = true;
   actualLabel = "Ctrl+Shift+2";
@@ -109,9 +110,10 @@ class FakeBus extends NodeEvents.EventEmitter {
       return reply();
     }
     if (message.member === "StartServiceByName") {
+      if (this.activationError) throw this.activationError;
       if (this.owner)
         throw new DBusError("org.freedesktop.DBus.Error.ServiceUnknown", "No activation file");
-      this.owner = ":1.2";
+      this.changeOwner(":1.3");
       return reply([2]);
     }
     if (message.member === "GetNameOwner") {
@@ -449,6 +451,38 @@ it.each([false, true])(
     expect(bus.calls.filter((call) => call.member === "BindShortcuts")).toHaveLength(4);
   },
 );
+
+it.each([false, true])(
+  "activates a stopped portal and restores capture (Hyprland: %s)",
+  async (hyprland) => {
+    const { bus, client, capture } = start(new FakeBus(), chord, hyprland);
+    await client.ready;
+    const bound = NodeEvents.EventEmitter.once(bus, "bind");
+    bus.changeOwner("");
+    await client.ready;
+    expect(bus.calls.some((call) => call.member === "StartServiceByName")).toBe(true);
+    await bound;
+    await client.ready;
+    expect(client.hasSession).toBe(true);
+    expect(client.state.shortcutPending).toBe(false);
+    bus.activate();
+    expect(capture).toHaveBeenCalledOnce();
+  },
+);
+
+it("ends pending recovery when portal activation fails", async () => {
+  const { bus, client } = start();
+  await client.ready;
+  bus.activationError = new DBusError("org.freedesktop.DBus.Error.ServiceUnknown", "No portal");
+  bus.changeOwner("");
+  await client.ready;
+  expect(client.state).toMatchObject({
+    shortcutRegistered: false,
+    shortcutPending: false,
+    shortcutCanRetry: true,
+  });
+  expect(bus.disconnect).toHaveBeenCalledOnce();
+});
 
 it.each([true, false])(
   "reuses interrupted identity registration when a portal returns (allowed: %s)",
