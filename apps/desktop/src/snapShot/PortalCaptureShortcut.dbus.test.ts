@@ -5,7 +5,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
-import { Message, NameFlag, Variant, sessionBus, type MessageBus } from "dbus-next";
+import { Message, MessageType, NameFlag, Variant, sessionBus, type MessageBus } from "dbus-next";
 import { expect, it, vi } from "vite-plus/test";
 import { PortalCaptureShortcut } from "./PortalCaptureShortcut.ts";
 
@@ -14,7 +14,7 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
   async () => {
     const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-shortcut-dbus-"));
     let daemon: NodeChildProcess.ChildProcess | undefined;
-    let server: MessageBus | undefined;
+    const servers: MessageBus[] = [];
     const clients: PortalCaptureShortcut[] = [];
     try {
       vi.stubEnv("FLATPAK_ID", "");
@@ -39,21 +39,29 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
       ]);
       lines.close();
       const connect = () => sessionBus({ busAddress: String(address) });
-      server = connect();
+      let server = connect();
+      servers.push(server);
       server.on("error", () => undefined);
       await server.requestName("org.freedesktop.portal.Desktop", NameFlag.ALLOW_REPLACEMENT);
       const root = "/org/freedesktop/portal/desktop";
       const iface = "org.freedesktop.portal.GlobalShortcuts";
       const sessions = new Map<string, string>();
       const bindings = new Map<string, string>();
-      const identities = new Set<string>();
       const closed = new Set<string>();
       const closeWaiters = new Map<string, () => void>();
       let bindCount = 0;
-      const serve = (bus: MessageBus) =>
+      const serve = (bus: MessageBus) => {
+        const identities = new Set<string>();
         bus.addMethodHandler((message: Message) => {
           if (message.member === "Register") {
             expect(message.body[0]).toBe("com.t3tools.T3Code");
+            if (identities.has(message.sender)) {
+              const reply = Message.newMethodReturn(message, "s", ["Already registered"]);
+              reply.type = MessageType.ERROR;
+              reply.errorName = "org.freedesktop.portal.Error.Failed";
+              bus.send(reply);
+              return true;
+            }
             identities.add(message.sender);
             bus.send(Message.newMethodReturn(message));
           } else if (message.member === "Get") {
@@ -104,6 +112,7 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
           } else return false;
           return true;
         });
+      };
       serve(server);
 
       const shortcut = {
@@ -174,7 +183,7 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
 
       for (const directReplacement of [false, true]) {
         const previousSession = sessions.get(lastSender)!;
-        const previousServer = server;
+        const previousServer: MessageBus = server;
         const sessionReleased = new Promise<void>((resolve) =>
           closeWaiters.set(previousSession, resolve),
         );
@@ -185,33 +194,49 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
           expect(next.client.state.shortcutPending).toBe(true);
           expect(next.client.hasSession).toBe(false);
         }
-        identities.clear();
         server = connect();
+        servers.push(server);
         server.on("error", () => undefined);
         serve(server);
         const settled = NodeEvents.EventEmitter.once(next.events, "settled");
-        try {
+        await server.requestName(
+          "org.freedesktop.portal.Desktop",
+          NameFlag.ALLOW_REPLACEMENT | NameFlag.REPLACE_EXISTING,
+        );
+        await pending;
+        await settled;
+        await sessionReleased;
+        expect(next.client.state.shortcutRegistered).toBe(true);
+        expect(sessions.get(lastSender)).not.toBe(previousSession);
+        const captured = NodeEvents.EventEmitter.once(next.events, "capture");
+        activate(lastSender);
+        await captured;
+
+        if (directReplacement) {
+          const replacementSession = sessions.get(lastSender)!;
+          const replacementReleased = new Promise<void>((resolve) =>
+            closeWaiters.set(replacementSession, resolve),
+          );
+          const recovered = NodeEvents.EventEmitter.once(next.events, "settled");
+          server = previousServer;
           await server.requestName(
             "org.freedesktop.portal.Desktop",
             NameFlag.ALLOW_REPLACEMENT | NameFlag.REPLACE_EXISTING,
           );
-          await pending;
-          await settled;
-          await sessionReleased;
+          await recovered;
           expect(next.client.state.shortcutRegistered).toBe(true);
-          expect(sessions.get(lastSender)).not.toBe(previousSession);
-          const captured = NodeEvents.EventEmitter.once(next.events, "capture");
+          await replacementReleased;
+          expect(sessions.get(lastSender)).not.toBe(replacementSession);
+          const restoredCapture = NodeEvents.EventEmitter.once(next.events, "capture");
           activate(lastSender);
-          await captured;
-        } finally {
-          previousServer.disconnect();
+          await restoredCapture;
         }
       }
-      expect(next.capture).toHaveBeenCalledTimes(3);
-      expect(bindCount).toBe(5);
+      expect(next.capture).toHaveBeenCalledTimes(4);
+      expect(bindCount).toBe(6);
     } finally {
       clients.forEach((client) => client.close());
-      server?.disconnect();
+      servers.forEach((bus) => bus.disconnect());
       if (daemon && daemon.exitCode === null) {
         const exited = NodeEvents.EventEmitter.once(daemon, "exit");
         daemon.kill();

@@ -76,6 +76,7 @@ export class PortalCaptureShortcut {
   private version = 0;
   private pending: { path: string; resolve: (body: unknown) => void } | undefined;
   private responses = new Map<string, unknown>();
+  private registrations = new Map<string, Promise<void>>();
   private stopped: Promise<never>;
   private rejectStopped!: (reason: Error) => void;
   private readonly onCapture: () => void;
@@ -429,26 +430,15 @@ export class PortalCaptureShortcut {
 
   private async initialize(appId: string, shortcut: SnapShotKeyChord) {
     const trigger = portalShortcutTrigger(shortcut);
-    if (!process.env.FLATPAK_ID && !process.env.SNAP) {
+    if (!this.owner)
       await this.call({
-        destination: PORTAL,
-        path: PATH,
-        interface: "org.freedesktop.host.portal.Registry",
-        member: "Register",
-        signature: "sa{sv}",
-        body: [appId, {}],
-      }).catch((error: unknown) => {
-        if (
-          !(
-            error instanceof DBusError &&
-            ["UnknownMethod", "UnknownInterface"].some(
-              (name) => error.type === `${DBUS}.Error.${name}`,
-            )
-          )
-        )
-          throw error;
+        destination: DBUS,
+        path: "/org/freedesktop/DBus",
+        interface: DBUS,
+        member: "StartServiceByName",
+        signature: "su",
+        body: [PORTAL, 0],
       });
-    }
     const owner = await this.call({
       destination: DBUS,
       path: "/org/freedesktop/DBus",
@@ -459,6 +449,39 @@ export class PortalCaptureShortcut {
     });
     this.owner = string(owner.body[0]);
     this.namespace = `${PATH}/request/${owner.destination.slice(1).replaceAll(".", "_")}/`;
+    if (!process.env.FLATPAK_ID && !process.env.SNAP) {
+      let registration = this.registrations.get(this.owner);
+      if (!registration) {
+        // Registry permits one registration per connection and portal, even across owner changes.
+        registration = this.bus
+          .call(
+            new Message({
+              destination: this.owner,
+              path: PATH,
+              interface: "org.freedesktop.host.portal.Registry",
+              member: "Register",
+              signature: "sa{sv}",
+              body: [appId, {}],
+            }),
+          )
+          .then((reply) => {
+            if (!reply) throw new Error("Missing shortcut portal reply.");
+          })
+          .catch((error: unknown) => {
+            if (
+              !(
+                error instanceof DBusError &&
+                ["UnknownMethod", "UnknownInterface"].some(
+                  (name) => error.type === `${DBUS}.Error.${name}`,
+                )
+              )
+            )
+              throw error;
+          });
+        this.registrations.set(this.owner, registration);
+      }
+      await this.wait(registration);
+    }
     const version = await this.call({
       destination: this.owner,
       path: PATH,
