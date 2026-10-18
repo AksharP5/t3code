@@ -430,7 +430,17 @@ export class PortalCaptureShortcut {
 
   private async initialize(appId: string, shortcut: SnapShotKeyChord) {
     const trigger = portalShortcutTrigger(shortcut);
-    if (!this.owner)
+    const ownerRequest = {
+      destination: DBUS,
+      path: "/org/freedesktop/DBus",
+      interface: DBUS,
+      member: "GetNameOwner",
+      signature: "s",
+      body: [PORTAL],
+    };
+    const owner = await this.call(ownerRequest).catch(async (error: unknown) => {
+      if (!(error instanceof DBusError && error.type === `${DBUS}.Error.NameHasNoOwner`))
+        throw error;
       await this.call({
         destination: DBUS,
         path: "/org/freedesktop/DBus",
@@ -439,13 +449,7 @@ export class PortalCaptureShortcut {
         signature: "su",
         body: [PORTAL, 0],
       });
-    const owner = await this.call({
-      destination: DBUS,
-      path: "/org/freedesktop/DBus",
-      interface: DBUS,
-      member: "GetNameOwner",
-      signature: "s",
-      body: [PORTAL],
+      return this.call(ownerRequest);
     });
     this.owner = string(owner.body[0]);
     this.namespace = `${PATH}/request/${owner.destination.slice(1).replaceAll(".", "_")}/`;

@@ -109,10 +109,16 @@ class FakeBus extends NodeEvents.EventEmitter {
       return reply();
     }
     if (message.member === "StartServiceByName") {
-      this.owner ||= ":1.2";
+      if (this.owner)
+        throw new DBusError("org.freedesktop.DBus.Error.ServiceUnknown", "No activation file");
+      this.owner = ":1.2";
       return reply([2]);
     }
-    if (message.member === "GetNameOwner") return reply([this.owner]);
+    if (message.member === "GetNameOwner") {
+      if (!this.owner)
+        throw new DBusError("org.freedesktop.DBus.Error.NameHasNoOwner", "No portal owner");
+      return reply([this.owner]);
+    }
     if (message.member === "Get") return reply([new Variant("u", this.version)]);
     if (message.member === "AddMatch" || message.member === "ConfigureShortcuts") return reply();
     const options = message.body.at(-1) as Record<string, Variant<string>>;

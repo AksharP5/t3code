@@ -19,15 +19,22 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
     try {
       vi.stubEnv("FLATPAK_ID", "");
       vi.stubEnv("SNAP", "");
+      const config = NodePath.join(dir, "bus.conf");
+      await NodeFSP.writeFile(
+        config,
+        `<busconfig>
+  <type>session</type>
+  <listen>unix:path=${NodePath.join(dir, "bus")}</listen>
+  <policy context="default">
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>`,
+      );
       daemon = NodeChildProcess.spawn(
         "dbus-daemon",
-        [
-          "--session",
-          "--nofork",
-          "--nopidfile",
-          "--print-address",
-          `--address=unix:path=${NodePath.join(dir, "bus")}`,
-        ],
+        [`--config-file=${config}`, "--nofork", "--nopidfile", "--print-address"],
         { stdio: ["ignore", "pipe", "pipe"] },
       );
       const lines = NodeReadline.createInterface({ input: daemon.stdout! });
@@ -151,7 +158,9 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
       };
       const first = start();
       await first.client.ready;
-      expect(first.client.state.shortcutRegistered).toBe(true);
+      expect(first.client.state.shortcutRegistered, first.client.state.shortcutMessage ?? "").toBe(
+        true,
+      );
       const firstSender = [...bindings.keys()][0]!;
       const firstCapture = NodeEvents.EventEmitter.once(first.events, "capture");
       activate(firstSender);
