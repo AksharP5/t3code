@@ -145,7 +145,19 @@ export class PortalCaptureShortcut {
         if (generation === this.generation) this.reconnecting = false;
       })
       .catch((error) => {
-        if (generation === this.generation) this.failed(error);
+        if (this.closed || generation !== this.generation) return;
+        if (this.reconnecting && !this.owner) {
+          this.update({
+            shortcutRegistered: false,
+            shortcutPending: false,
+            shortcutCanRetry: !this.managedByHyprland,
+            shortcutMessage:
+              (error instanceof Error ? `${error.message} ` : "") +
+              "Waiting for the desktop shortcut service to return.",
+          });
+          return;
+        }
+        this.failed(error);
       });
   }
 

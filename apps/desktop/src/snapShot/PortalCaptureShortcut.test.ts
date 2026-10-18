@@ -470,19 +470,29 @@ it.each([false, true])(
   },
 );
 
-it("ends pending recovery when portal activation fails", async () => {
-  const { bus, client } = start();
-  await client.ready;
-  bus.activationError = new DBusError("org.freedesktop.DBus.Error.ServiceUnknown", "No portal");
-  bus.changeOwner("");
-  await client.ready;
-  expect(client.state).toMatchObject({
-    shortcutRegistered: false,
-    shortcutPending: false,
-    shortcutCanRetry: true,
-  });
-  expect(bus.disconnect).toHaveBeenCalledOnce();
-});
+it.each([false, true])(
+  "recovers when the portal starts after activation fails (Hyprland: %s)",
+  async (hyprland) => {
+    const { bus, client, capture } = start(new FakeBus(), chord, hyprland);
+    await client.ready;
+    bus.activationError = new DBusError("org.freedesktop.DBus.Error.ServiceUnknown", "No portal");
+    bus.changeOwner("");
+    await client.ready;
+    expect(client.state).toMatchObject({
+      shortcutRegistered: false,
+      shortcutPending: false,
+      shortcutCanRetry: !hyprland,
+    });
+    expect(bus.disconnect).not.toHaveBeenCalled();
+    expect(client.state.shortcutMessage).toContain("No portal");
+    bus.changeOwner(":1.4");
+    await client.ready;
+    expect(client.hasSession).toBe(true);
+    expect(client.state.shortcutPending).toBe(false);
+    bus.activate();
+    expect(capture).toHaveBeenCalledOnce();
+  },
+);
 
 it.each([true, false])(
   "reuses interrupted identity registration when a portal returns (allowed: %s)",

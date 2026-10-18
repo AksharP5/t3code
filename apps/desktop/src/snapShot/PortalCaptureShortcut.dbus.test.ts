@@ -140,6 +140,7 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
           () => {
             events.emit("changed");
             if (!client.state.shortcutPending) events.emit("settled");
+            if (client.state.shortcutRegistered) events.emit("registered");
           },
           connect(),
         );
@@ -197,16 +198,27 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
           closeWaiters.set(previousSession, resolve),
         );
         const pending = NodeEvents.EventEmitter.once(next.events, "changed");
+        if (!directReplacement) {
+          const unavailable = NodeEvents.EventEmitter.once(next.events, "settled");
+          await previousServer.releaseName("org.freedesktop.portal.Desktop");
+          await pending;
+          await unavailable;
+          expect(next.client.state).toMatchObject({
+            shortcutRegistered: false,
+            shortcutPending: false,
+            shortcutCanRetry: true,
+          });
+          expect(next.client.hasSession).toBe(false);
+        }
         server = connect();
         servers.push(server);
         server.on("error", () => undefined);
         serve(server);
-        const settled = NodeEvents.EventEmitter.once(next.events, "settled");
+        const settled = NodeEvents.EventEmitter.once(next.events, "registered");
         await server.requestName(
           "org.freedesktop.portal.Desktop",
-          NameFlag.ALLOW_REPLACEMENT | (directReplacement ? NameFlag.REPLACE_EXISTING : 0),
+          NameFlag.ALLOW_REPLACEMENT | NameFlag.REPLACE_EXISTING,
         );
-        if (!directReplacement) await previousServer.releaseName("org.freedesktop.portal.Desktop");
         await pending;
         await settled;
         await sessionReleased;
@@ -221,7 +233,7 @@ it.runIf(NodeChildProcess.spawnSync("dbus-daemon", ["--version"]).status === 0)(
           const replacementReleased = new Promise<void>((resolve) =>
             closeWaiters.set(replacementSession, resolve),
           );
-          const recovered = NodeEvents.EventEmitter.once(next.events, "settled");
+          const recovered = NodeEvents.EventEmitter.once(next.events, "registered");
           server = previousServer;
           await server.requestName(
             "org.freedesktop.portal.Desktop",
