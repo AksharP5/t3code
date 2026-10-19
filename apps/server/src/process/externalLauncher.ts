@@ -652,12 +652,11 @@ const resolveFileManagerRevealLaunch = Effect.fn("resolveFileManagerRevealLaunch
     };
   }
 
-  // Folder fallback when the Linux file manager cannot select items over D-Bus.
   const path = yield* Path.Path;
   return { editor: "file-manager", target, command, args: [path.dirname(target)] };
 });
 
-const tryRevealLinuxFile = Effect.fn("externalLauncher.tryRevealLinuxFile")(
+const tryRevealLinuxItem = Effect.fn("externalLauncher.tryRevealLinuxItem")(
   function* (target: string) {
     const env = yield* readCommandLookupEnv;
     if (!(yield* isCommandAvailable("gdbus", { env }))) return false;
@@ -677,18 +676,27 @@ const tryRevealLinuxFile = Effect.fn("externalLauncher.tryRevealLinuxFile")(
           "/org/freedesktop/FileManager1",
           "--method",
           "org.freedesktop.FileManager1.ShowItems",
-          // File URLs already escape quotes and backslashes for this GVariant string.
+          // File URLs percent-encode the double quotes and backslashes GVariant would interpret.
           `["${uri.href}"]`,
           "",
         ],
-        { stdin: "ignore", stdout: "ignore", stderr: "ignore", forceKillAfter: "1 second" },
+        {
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+          // Timeout waits for scoped cleanup, even if the helper ignores SIGTERM.
+          forceKillAfter: "1 second",
+        },
       ),
     );
     return exitCode === 0;
   },
-  // A missing service or stalled desktop session must still open the folder.
   Effect.timeout("2 seconds"),
-  Effect.orElseSucceed(() => false),
+  Effect.catchTags({
+    BadArgument: () => Effect.succeed(false),
+    PlatformError: () => Effect.succeed(false),
+    TimeoutError: () => Effect.succeed(false),
+  }),
 );
 
 const launchEditor = Effect.fn("externalLauncher.launchEditor")(function* (
@@ -699,7 +707,8 @@ const launchEditor = Effect.fn("externalLauncher.launchEditor")(function* (
     input.editor === "file-manager" &&
     input.reveal === true &&
     launch.command === "xdg-open" &&
-    (yield* tryRevealLinuxFile(input.cwd))
+    (yield* HostProcess.Platform) === "linux" &&
+    (yield* tryRevealLinuxItem(launch.target))
   ) {
     return;
   }
