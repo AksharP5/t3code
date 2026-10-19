@@ -823,6 +823,45 @@ it.effect.skipIf(windowsHost)(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect.skipIf(windowsHost)("reveals by opening the containing directory on Linux", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const binDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-editors-" });
+    for (const name of ["xdg-open", "xdg-mime"]) {
+      const filePath = path.join(binDir, name);
+      yield* fileSystem.writeFileString(filePath, "#!/bin/sh\n");
+      yield* fileSystem.chmod(filePath, 0o755);
+    }
+
+    const spawnedCommands: ChildProcess.StandardCommand[] = [];
+    yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      yield* launcher.launchEditor({
+        editor: "file-manager",
+        cwd: "/workspace/media/linux-mini-v2.mp4",
+        reveal: true,
+      });
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          platform: "linux",
+          env: { PATH: binDir, DISPLAY: ":0" },
+          onSpawn: (command) => {
+            spawnedCommands.push(command);
+          },
+          spawnResult: (command) =>
+            command.command === "xdg-mime" ? { stdout: "org.gnome.Nautilus.desktop\n" } : undefined,
+        }),
+      ),
+    );
+
+    const spawned = spawnedCommands.find((command) => command.command === "xdg-open");
+    assert.ok(spawned);
+    assert.deepEqual(spawned.args, ["/workspace/media"]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 for (const wsl of [false, true]) {
   it.effect.skipIf(windowsHost)(
     "selects a file over D-Bus on " + (wsl ? "WSLg without interop PowerShell" : "Linux"),
@@ -875,19 +914,21 @@ for (const wsl of [false, true]) {
           "[\"file:///workspace/media/a%20'quoted'%20%22clip%22%20%23100%25%20%3F%20%C3%A9%5Cname.mp4\"]",
           "",
         ]);
-        assert.isUndefined(spawnedCommands.find((command) => command.command === "xdg-open"));
-        assert.isUndefined(spawnedCommands.find((command) => command.command === "explorer.exe"));
+        assert.deepEqual(
+          spawnedCommands.filter((command) => command.command !== "xdg-mime"),
+          [reveal],
+        );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 }
 
-for (const scenario of ["missing", "rejected", "spawn-error", "stalled"] as const) {
+for (const scenario of ["rejected", "spawn-error", "stalled"] as const) {
   it.effect.skipIf(windowsHost)("opens the containing directory when D-Bus is " + scenario, () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const binDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-editors-" });
-      for (const name of ["xdg-open", "xdg-mime", ...(scenario === "missing" ? [] : ["gdbus"])]) {
+      for (const name of ["xdg-open", "xdg-mime", "gdbus"]) {
         const filePath = path.join(binDir, name);
         yield* fileSystem.writeFileString(filePath, "#!/bin/sh\n");
         yield* fileSystem.chmod(filePath, 0o755);
@@ -934,16 +975,21 @@ for (const scenario of ["missing", "rejected", "spawn-error", "stalled"] as cons
       if (scenario === "stalled") {
         const fiber = yield* launch.pipe(Effect.forkChild);
         yield* started.await;
-        yield* TestClock.adjust("2 seconds");
+        yield* TestClock.adjust("1999 millis");
+        assert.isUndefined(spawnedCommands.find((command) => command.command === "xdg-open"));
+        yield* TestClock.adjust("1 millis");
         yield* Fiber.join(fiber);
       } else {
         yield* launch;
       }
 
-      const spawned = spawnedCommands.find((command) => command.command === "xdg-open");
-      assert.ok(spawned);
-      assert.deepEqual(spawned.args, ["/workspace/media"]);
-      assert.equal(spawnedCommands.filter((command) => command.command === "xdg-open").length, 1);
+      assert.deepEqual(
+        spawnedCommands
+          .filter((command) => command.command !== "xdg-mime")
+          .map((command) => command.command),
+        ["gdbus", "xdg-open"],
+      );
+      assert.deepEqual(spawnedCommands.at(-1)?.args, ["/workspace/media"]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 }
