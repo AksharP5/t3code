@@ -803,6 +803,43 @@ it.layer(
     }),
   );
 
+  it.effect("preserves large chunked OSC 52 and DCS strings across reopen", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0]!;
+      const outputSeen = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "output" && event.data === "done\n"
+          ? Deferred.succeed(outputSeen, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      const sequences = [
+        { prefix: `\u001b]52;c;${"YWJj".repeat(16_384)}\u001b`, terminator: "\\" },
+        { prefix: `\u0090q${"?".repeat(65_536)}`, terminator: "\u009c" },
+      ];
+      const stripped = "\u001b]11;?\u0007\u0090$q m\u009c";
+      const preserved = "\u001b[31m\u009d52;c;YWJj\u009c";
+      const expected =
+        sequences.map(({ prefix, terminator }) => prefix + terminator + preserved).join("") +
+        "done\n";
+
+      for (const { prefix, terminator } of sequences) {
+        for (let offset = 0; offset < prefix.length; offset += 4_096) {
+          process.emitData(prefix.slice(offset, offset + 4_096));
+        }
+        process.emitData(terminator + stripped + preserved);
+      }
+      process.emitData("done\n");
+      yield* Deferred.await(outputSeen);
+      yield* manager.close({ threadId: "thread-1" });
+
+      expect(yield* readFileString(yield* historyLogPath(logsDir))).toBe(expected);
+      expect((yield* manager.open(openInput())).history.startsWith(expected)).toBe(true);
+    }),
+  );
+
   it.effect(
     "preserves chunk-split ESC sequences with intermediate bytes without leaking final bytes",
     () =>
