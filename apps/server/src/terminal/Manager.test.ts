@@ -825,16 +825,35 @@ it.layer(
         sequences.map(({ prefix, terminator }) => prefix + terminator + preserved).join("") +
         "done\n";
 
-      for (const { prefix, terminator } of sequences) {
-        for (let offset = 0; offset < prefix.length; offset += 4_096) {
-          process.emitData(prefix.slice(offset, offset + 4_096));
+      // Counts reads of strings larger than one emitted chunk, so rescanning the
+      // pending prefix on every chunk (#23817) shows up as quadratic work.
+      const charCodeAt = String.prototype.charCodeAt;
+      let largeStringReads = 0;
+      yield* Effect.gen(function* () {
+        // eslint-disable-next-line no-extend-native -- Count reads without retaining millions of spy call records.
+        String.prototype.charCodeAt = function (this: string, index: number) {
+          if (this.length > 4_096) largeStringReads += 1;
+          return charCodeAt.call(this, index);
+        };
+        for (const { prefix, terminator } of sequences) {
+          for (let offset = 0; offset < prefix.length; offset += 4_096) {
+            process.emitData(prefix.slice(offset, offset + 4_096));
+          }
+          process.emitData(terminator + stripped + preserved);
         }
-        process.emitData(terminator + stripped + preserved);
-      }
-      process.emitData("done\n");
-      yield* Deferred.await(outputSeen);
+        process.emitData("done\n");
+        yield* Deferred.await(outputSeen);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            // eslint-disable-next-line no-extend-native -- Restore the counting hook even when the test fails.
+            String.prototype.charCodeAt = charCodeAt;
+          }),
+        ),
+      );
       yield* manager.close({ threadId: "thread-1" });
 
+      expect(largeStringReads).toBeLessThan(2 * expected.length);
       expect(yield* readFileString(yield* historyLogPath(logsDir))).toBe(expected);
       expect((yield* manager.open(openInput())).history.startsWith(expected)).toBe(true);
     }),
